@@ -31,6 +31,10 @@
 #define DEFAULT_DAYS    30 /* default cert validity period in days */
 #define UNSET_DAYS      -2 /* -1 is used for testing expiration checks */
 #define EXT_COPY_UNSET     -1
+// Start adding new code Adian Shubbar
+#define ENV_DEFAULT_STARTDATE   "default_startdate"
+#define ENV_DEFAULT_ENDDATE     "default_enddate"
+#define ENV_DEFAULT_DAYS        "default_days"
 
 static int callb(int ok, X509_STORE_CTX *ctx);
 static ASN1_INTEGER *x509_load_serial(const char *CAfile,
@@ -84,6 +88,11 @@ const OPTIONS x509_options[] = {
     {"nocert", OPT_NOCERT, '-',
      "No cert output (except for requested printing)"},
     {"noout", OPT_NOOUT, '-', "No output (except for requested printing)"},
+    // new code starts here
+    {"startdate", OPT_STARTDATE, 's', "Cert notBefore, YYMMDDHHMMSSZ"},
+    {"enddate", OPT_ENDDATE, 's',
+     "YYMMDDHHMMSSZ cert notAfter (overrides -days)"},
+
 
     OPT_SECTION("Certificate printing"),
     {"text", OPT_TEXT, '-', "Print the certificate in text form"},
@@ -149,6 +158,9 @@ const OPTIONS x509_options[] = {
     {"badsig", OPT_BADSIG, '-',
      "Corrupt last byte of certificate signature (for test)"},
     {"", OPT_MD, '-', "Any supported digest, used for signing and printing"},
+    {"startdate", OPT_STARTDATE, '-', "Print the notBefore field"},
+    {"enddate", OPT_ENDDATE, '-', "Print the notAfter field"},
+
 
     OPT_SECTION("Micro-CA"),
     {"CA", OPT_CA, '<',
@@ -293,6 +305,11 @@ int x509_main(int argc, char **argv)
     int preserve_dates = 0;
     OPTION_CHOICE o;
     ENGINE *e = NULL;
+     // updated the stat and end date type
+     char *start_date = NULL;
+     char *end_date  = NULL;
+     char *section = NULL;
+
 #ifndef OPENSSL_NO_MD5
     int subject_hash_old = 0, issuer_hash_old = 0;
 #endif
@@ -506,11 +523,12 @@ int x509_main(int argc, char **argv)
         case OPT_PURPOSE:
             pprint = ++num;
             break;
+            // change to opt_arge
         case OPT_STARTDATE:
-            startdate = ++num;
+            start_date = opt_arg();
             break;
         case OPT_ENDDATE:
-            enddate = ++num;
+            end_date = opt_arg();
             break;
         case OPT_NOOUT:
             noout = ++num;
@@ -607,7 +625,8 @@ int x509_main(int argc, char **argv)
         BIO_printf(bio_err, "Cannot use -preserve_dates with -days option\n");
         goto err;
     }
-    if (days == UNSET_DAYS)
+    //when start date and enddate nulls put default days
+    if ((days == UNSET_DAYS)|| (start_date ==NULL && end_date == NULL))
         days = DEFAULT_DAYS;
 
     if (!app_passwd(passinarg, NULL, &passin, NULL)) {
@@ -829,10 +848,41 @@ int x509_main(int argc, char **argv)
         goto end;
 
     if (reqfile || newcert || privkey != NULL || CAfile != NULL) {
-        if (!preserve_dates && !set_cert_times(x, NULL, NULL, days))
+        if (!preserve_dates && !set_cert_times(x, start_date, end_date, days))
             goto end;
         if (!X509_set_issuer_name(x, X509_get_subject_name(issuer_cert)))
             goto end;
+        //start of the update 
+        if (start_date == NULL) {
+            start_date = NCONF_get_string(extconf, section, ENV_DEFAULT_STARTDATE);
+            if (start_date == NULL)
+                ERR_clear_error();
+        }
+        if (start_date != NULL && !ASN1_TIME_set_string_X509(NULL, start_date)) {
+            BIO_printf(bio_err,
+                       "start date is invalid, it should be YYMMDDHHMMSSZ or YYYYMMDDHHMMSSZ\n");
+            goto end;
+        }
+       
+        if (start_date == NULL)
+            start_date = "today";
+
+        if (end_date == NULL) {
+            end_date = NCONF_get_string(extconf, section, ENV_DEFAULT_ENDDATE);
+            if (end_date == NULL)
+                ERR_clear_error();
+        }
+        if (end_date != NULL && !ASN1_TIME_set_string_X509(NULL, end_date)) {
+            BIO_printf(bio_err,
+                       "end date is invalid, it should be YYMMDDHHMMSSZ or YYYYMMDDHHMMSSZ\n");
+            goto end;
+        }
+
+        if (end_date == NULL && days == 0) {
+            BIO_printf(bio_err, "cannot lookup how many days to certify for\n");
+            goto end;
+        }
+
     }
 
     X509V3_set_ctx(&ext_ctx, issuer_cert, x, NULL, NULL, X509V3_CTX_REPLACE);
